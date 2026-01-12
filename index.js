@@ -1,28 +1,28 @@
 const express = require("express");
 const cors = require("cors");
-const mysql = require("mysql2/promise");
+const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Render では PORT は環境変数から取得必須
+// RenderではPORT必須
 const PORT = process.env.PORT || 3000;
 
-// ===== DB設定（後で Render の Environment に入れる）=====
-const dbConfig = {
-  host: process.env.DB_HOST || "localhost",
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "root",
-  database: process.env.DB_NAME || "liff_db",
-};
+// ★ RenderのPostgreSQL（自動 or 手動で設定）
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false, // Render必須
+  },
+});
 
-// ===== 動作確認 =====
+// 動作確認
 app.get("/", (req, res) => {
   res.send("LIFF API is running");
 });
 
-// ===== 社員判定 API =====
+// 社員判定API
 app.get("/api/me", async (req, res) => {
   const lineUserId = req.query.line_user_id;
 
@@ -31,22 +31,18 @@ app.get("/api/me", async (req, res) => {
   }
 
   try {
-    const conn = await mysql.createConnection(dbConfig);
-
-    const [rows] = await conn.execute(
-      "SELECT employee_no, name, role, status FROM employees WHERE line_user_id = ?",
+    const result = await pool.query(
+      "SELECT employee_no, name, role, status FROM employees WHERE line_user_id = $1",
       [lineUserId]
     );
 
-    await conn.end();
-
-    if (rows.length === 0) {
+    if (result.rows.length === 0) {
       return res.json({ exists: false });
     }
 
     return res.json({
       exists: true,
-      employee: rows[0],
+      employee: result.rows[0],
     });
   } catch (err) {
     console.error("DB ERROR:", err);
@@ -54,7 +50,7 @@ app.get("/api/me", async (req, res) => {
   }
 });
 
-// ===== サーバ起動 =====
+// サーバ起動
 app.listen(PORT, () => {
   console.log(`API listening on port ${PORT}`);
 });
