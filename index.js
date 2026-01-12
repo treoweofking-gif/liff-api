@@ -32,9 +32,11 @@ app.get("/api/me", async (req, res) => {
 
   try {
     const result = await pool.query(
-      "SELECT employee_no, name, role, status FROM employees WHERE line_user_id = $1",
-      [lineUserId]
-    );
+const result = await pool.query(
+  'SELECT * FROM employees WHERE line_user_id = $1 AND is_active = true',
+  [lineUserId]
+);
+
 
     if (result.rows.length === 0) {
       return res.json({ exists: false });
