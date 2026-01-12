@@ -31,7 +31,6 @@ app.get("/api/me", async (req, res) => {
   }
 
   try {
-    const result = await pool.query(
 const result = await pool.query(
   'SELECT * FROM employees WHERE line_user_id = $1 AND is_active = true',
   [lineUserId]
