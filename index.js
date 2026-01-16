@@ -4,12 +4,13 @@ const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
 
 app.post("/webhook", express.json(), (req, res) => {
   console.log("WEBHOOK RECEIVED", JSON.stringify(req.body));
   res.status(200).send("OK");
 });
+
+app.use(express.json());
 
 // RenderではPORT必須
 const PORT = process.env.PORT || 3000;
