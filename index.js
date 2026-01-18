@@ -27,20 +27,142 @@ app.post("/webhook", line.middleware(lineConfig), async (req, res) => {
 });
 
 // Webhookイベント処理
-async function handleEvent(event) {
-  // 1) LIFFが送る「住所変更を申請します」を受けたら案内
-  if (event.type === "message" && event.message.type === "text") {
-    const text = event.message.text;
+async function getLatestReq(lineUserId) {
+  const r = await pool.query(
+    `SELECT * FROM public.address_change_requests
+     WHERE line_user_id = $1
+     ORDER BY id DESC
+     LIMIT 1`,
+    [lineUserId]
+  );
+  return r.rows[0] || null;
+}
 
-    if (text === "住所変更を申請します") {
+async function createReq(lineUserId) {
+  const r = await pool.query(
+    `INSERT INTO public.address_change_requests (line_user_id, status)
+     VALUES ($1, 'waiting_address')
+     RETURNING *`,
+    [lineUserId]
+  );
+  return r.rows[0];
+}
+
+async function updateReq(id, fields) {
+  const keys = Object.keys(fields);
+  const sets = keys.map((k, i) => `${k} = $${i + 2}`);
+  const values = keys.map((k) => fields[k]);
+
+  const r = await pool.query(
+    `UPDATE public.address_change_requests
+     SET ${sets.join(", ")}, updated_at = now()
+     WHERE id = $1
+     RETURNING *`,
+    [id, ...values]
+  );
+  return r.rows[0];
+}
+
+function yesNoQuickReply() {
+  return {
+    items: [
+      { type: "action", action: { type: "message", label: "はい", text: "はい" } },
+      { type: "action", action: { type: "message", label: "いいえ", text: "いいえ" } },
+    ],
+  };
+}
+
+async function handleEvent(event) {
+  const lineUserId = event?.source?.userId;
+  if (!lineUserId) return null;
+
+  // 1) テキスト受信
+  if (event.type === "message" && event.message.type === "text") {
+    const text = (event.message.text || "").trim();
+
+    // 開始合図（LIFFのボタンが送る文言）
+    if (text === "住所変更を開始" || text === "住所変更を申請します") {
+      await createReq(lineUserId);
+
       return lineClient.replyMessage(event.replyToken, {
         type: "text",
-        text: "住所変更となった運転免許証または住民票の写真を送ってください。",
+        text: "運転免許証や住民票の写真などをご準備し、住所を入力ください。",
+      });
+    }
+
+    // 進行中の依頼を取得
+    const req = await getLatestReq(lineUserId);
+    if (!req || req.status === "done") return null;
+
+    // 住所入力待ち
+    if (req.status === "waiting_address") {
+      const addr = text;
+      const updated = await updateReq(req.id, {
+        status: "waiting_confirm",
+        address_text: addr,
+      });
+
+      return lineClient.replyMessage(event.replyToken, {
+        type: "text",
+        text: `こちらで間違いありませんか？\n\n${updated.address_text}`,
+        quickReply: yesNoQuickReply(),
+      });
+    }
+
+    // はい/いいえ待ち
+    if (req.status === "waiting_confirm") {
+      if (text === "はい") {
+        await updateReq(req.id, { status: "waiting_photo" });
+
+        return lineClient.replyMessage(event.replyToken, {
+          type: "text",
+          text: "ありがとうございます。運転免許証や住民票の写真をお送りください。無ければご準備いただき再度お願い致します。",
+        });
+      }
+
+      if (text === "いいえ") {
+        await updateReq(req.id, { status: "waiting_address", address_text: null });
+
+        return lineClient.replyMessage(event.replyToken, {
+          type: "text",
+          text: "承知しました。もう一度、住所を入力してください。",
+        });
+      }
+
+      return lineClient.replyMessage(event.replyToken, {
+        type: "text",
+        text: "「はい」または「いいえ」を選んでください。",
+        quickReply: yesNoQuickReply(),
+      });
+    }
+
+    // 写真待ち中にテキストが来た
+    if (req.status === "waiting_photo") {
+      return lineClient.replyMessage(event.replyToken, {
+        type: "text",
+        text: "運転免許証または住民票の写真をお送りください。",
       });
     }
 
     return null;
   }
+
+  // 2) 画像受信（写真）
+  if (event.type === "message" && event.message.type === "image") {
+    const req = await getLatestReq(lineUserId);
+    if (!req || req.status !== "waiting_photo") return null;
+
+    await updateReq(req.id, { status: "done" });
+
+    return lineClient.replyMessage(event.replyToken, {
+      type: "text",
+      text: "ご連絡ありがとうございます。社内の名簿を更新いたします。",
+    });
+  }
+
+  return null;
+}
+
 
   // 2) 画像が来たらお礼（まずはMVP：状態判定なしで返信）
   if (event.type === "message" && event.message.type === "image") {
